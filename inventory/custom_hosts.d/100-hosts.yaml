@@ -1,0 +1,17 @@
+all:
+  children:
+    k8sm:
+      hosts:
+        k8sm-61:
+    k8sw:
+      hosts:
+        k8sw-61:
+  hosts:
+    k8sm-61:
+      ansible_aws_ssm_instance_id: i-example1
+    k8sw-61:
+      ansible_aws_ssm_instance_id: i-example2
+  vars:
+    aws_environment: true
+    aws_region: 'eu-west-1'
+    aws_bucket_name: k8s1-example-ansible

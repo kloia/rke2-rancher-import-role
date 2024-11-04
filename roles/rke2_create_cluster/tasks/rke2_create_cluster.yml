@@ -1,0 +1,497 @@
+- name: Set fact
+  ansible.builtin.set_fact:
+    local_rke2installation_script_url: '{{ rke2installation_script_url }}'
+    local_rancher_host: '{{ local_rancher_url_parts.scheme }}://{{ local_rancher_url_parts.hostname }}'
+    local_rancher_username: '{{ (rancherimportcluster_api_token|split(":"))[0] }}'
+    local_rancher_password: '{{ (rancherimportcluster_api_token|split(":"))[1] }}'
+    local_rancher_cluster_name: '{{ rancherimportcluster_cluster_name }}'
+    local_importrke2_to_rancher: '{{ importrke2_to_rancher }}'
+    local_rke2_os_hardening: '{{ rke2_os_hardening }}'
+    local_rke2_version: '{{ rke2_version }}'
+    local_rke2_cni: '{{ rke2_cni }}'
+    local_rke2_token: '{{ rke2_token }}'
+    local_rancher_headers:
+      Accept: application/json
+      Content-Type: application/json
+  vars:
+    local_rancher_url_parts: '{{ rancherimportcluster_rancher_host | urlsplit }}'
+
+# RKE2 OS PreReqs and Hardening
+- name: Add the user etcd to Master Nodes
+  when: inventory_hostname in groups.k8sm
+  ansible.builtin.user:
+    name: etcd
+    comment: etcd user
+    shell: /sbin/nologin
+    create_home: no
+    system: true
+
+- name: Add pam_limits.so to common-session
+  blockinfile:
+    path: /etc/pam.d/common-session
+    create: false
+    block: |
+      session required pam_limits.so
+
+- name: Add pam_limits.so to common-session-noninteractive
+  blockinfile:
+    path: /etc/pam.d/common-session-noninteractive
+    create: false
+    block: |
+      session required pam_limits.so
+
+- name: Insert a new rule pam_wheel.so with argument 'use_uid' after an \
+        existing rule pam_rootok.so
+  community.general.pamd:
+    name: su
+    type: session
+    control: required
+    module_path: pam_systemd.so
+    new_type: session
+    new_control: required
+    new_module_path: pam_limits.so
+    state: after
+
+- name: Add or modify hard nofile limits for root
+  community.general.pam_limits:
+    domain: root
+    limit_type: hard
+    limit_item: nofile
+    value: 1024000
+
+- name: Add or modify hard nofile limits for root
+  community.general.pam_limits:
+    domain: root
+    limit_type: hard
+    limit_item: nproc
+    value: 1024000
+
+- name: Add or modify soft nofile limits for root
+  community.general.pam_limits:
+    domain: root
+    limit_type: soft
+    limit_item: nofile
+    value: 1024000
+
+- name: Add or modify soft nofile limits for root
+  community.general.pam_limits:
+    domain: root
+    limit_type: soft
+    limit_item: nproc
+    value: 1024000
+
+- name: Add or modify hard nofile limits for wildcard domain
+  community.general.pam_limits:
+    domain: '*'
+    limit_type: hard
+    limit_item: nofile
+    value: 1024000
+
+- name: Add or modify hard nofile limits for wildcard domain
+  community.general.pam_limits:
+    domain: '*'
+    limit_type: hard
+    limit_item: nproc
+    value: 1024000
+
+- name: Add or modify soft nofile limits for wildcard domain
+  community.general.pam_limits:
+    domain: '*'
+    limit_type: soft
+    limit_item: nofile
+    value: 1024000
+
+- name: Add or modify soft nofile limits for wildcard domain
+  community.general.pam_limits:
+    domain: '*'
+    limit_type: soft
+    limit_item: nproc
+    value: 1024000
+
+- name: Add the br_netfilter module
+  modprobe:
+    name: br_netfilter
+    state: present
+
+- name: Add the br_netfilter module
+  modprobe:
+    name: br_netfilter
+    state: present
+
+- name: Enable ip_forward
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: '1'
+    sysctl_set: yes
+    state: present
+    reload: yes
+
+- name: Enable bridge ipv4
+  sysctl:
+    name: net.bridge.bridge-nf-call-iptables
+    value: '1'
+    sysctl_set: yes
+    state: present
+    reload: yes
+  
+- name:  Enable bridge ipv6
+  sysctl:
+    name: net.bridge.bridge-nf-call-ip6tables
+    value: '1'
+    sysctl_set: yes
+    state: present
+    reload: yes
+
+- name: Disable vm.panic_on_oom
+  when: local_rke2_os_hardening
+  sysctl:
+    name: vm.panic_on_oom
+    value: '0'
+    sysctl_set: yes
+    state: present
+    reload: yes
+
+- name: Enable vm.overcommit_memory
+  when: local_rke2_os_hardening
+  sysctl:
+    name: vm.overcommit_memory
+    value: '1'
+    sysctl_set: yes
+    state: present
+    reload: yes
+
+- name: Set kernel.panic value
+  when: local_rke2_os_hardening
+  sysctl:
+    name: kernel.panic
+    value: '10'
+    sysctl_set: yes
+    state: present
+    reload: yes
+
+- name: Enable kernel.panic_on_oops
+  when: local_rke2_os_hardening
+  sysctl:
+    name: kernel.panic_on_oops
+    value: '1'
+    sysctl_set: yes
+    state: present
+    reload: yes
+
+- name: Log rotation
+  blockinfile:
+    path: /etc/logrotate.d/allcontainerlogs
+    create: true
+    block: |
+      {
+      rotate 5
+      daily
+      dateext
+      maxsize 250M
+      missingok
+      compress
+      copytruncate
+      dateformat -%Y%m%d%H%M%S
+      create 0644 root root
+      }
+
+# RKE2 Cluster Tasks
+- name: Check RKE2 cluster config exists
+  when: inventory_hostname == groups.k8sm.0
+  stat: path=/etc/rancher/rke2/rke2.yaml
+  register: rke2_config_stat
+
+- name: Install Kubernetes Pip Package
+  become: true
+  when: 
+    - inventory_hostname == groups.k8sm.0
+    - rke2_config_stat.stat.exists
+  ansible.builtin.pip:
+    name: kubernetes
+
+- name: Check RKE2 cluster state
+  become: true
+  when: 
+    - inventory_hostname == groups.k8sm.0
+    - rke2_config_stat.stat.exists
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: po
+  environment:
+    K8S_AUTH_KUBECONFIG: '/etc/rancher/rke2/rke2.yaml'
+  register: reg_rke2_cluster_status
+
+- name: Fetch IP addresses using shell command
+  vars:
+    command: "hostname -I | awk '{print $1}'"
+  shell: "{{ command }}"
+  register: ip_address_result
+
+- name: Set IP addresses
+  set_fact:
+    ipaddr: "{{ ip_address_result.stdout }}"
+
+- name: Set API IP address
+  set_fact:
+    local_rke2_api_ip: "{{ hostvars[groups.k8sm.0].ipaddr }}"
+
+- name: Create RKE2 cluster if not exists
+  when:
+    - inventory_hostname == groups.k8sm.0
+    - not rke2_config_stat.stat.exists
+  block:
+
+    - name: Get RKE2 cluster installer script
+      get_url:
+        url: '{{ local_rke2installation_script_url }}'
+        dest: /tmp/rke2-install.sh
+        mode: '0700'
+
+    - name: Create RKE2 config directory
+      file:
+        path: /etc/rancher/rke2
+        state: directory
+        mode: '0755'
+
+    - name: Create RKE2 config file for API server
+      template:
+        src: config.yaml.j2
+        dest: /etc/rancher/rke2/config.yaml
+        mode: '0600'
+
+    - name: Install RKE2 on the First Node
+      ansible.builtin.shell:
+        cmd: /tmp/rke2-install.sh
+      environment:
+        INSTALL_RKE2_VERSION: "{{ local_rke2_version }}"
+
+    - name: Start RKE2 service on the First Node
+      ansible.builtin.systemd:
+        name: "rke2-server.service"
+        state: started
+        enabled: true
+
+    - name: Wait for the first Node be ready
+      shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes | grep "Ready"
+      args:
+        executable: /bin/bash
+      changed_when: false
+      register: first_node
+      until:
+        - '" Ready "  in first_node.stdout'
+      retries: 20
+      delay: 15
+
+    - set_fact: rke2_config_stat.stat.exists = true
+
+- name: Join Other Master Nodes to RKE2 Cluster
+  when:
+    - inventory_hostname != groups.k8sm.0
+    - inventory_hostname in groups.k8sm
+  block:
+
+    - name: Check RKE2 Service Status
+      ansible.builtin.systemd:
+        name: "rke2-server"
+      register: service_status 
+
+    - name: Get RKE2 cluster installer script
+      when: service_status.status.ActiveState != "active"
+      get_url:
+        url: '{{ local_rke2installation_script_url }}'
+        dest: /tmp/rke2-install.sh
+        mode: '0700'
+
+    - name: Create RKE2 config directory
+      when: service_status.status.ActiveState != "active"
+      file:
+        path: /etc/rancher/rke2
+        state: directory
+        mode: '0755'
+
+    - name: Create RKE2 config file
+      when: service_status.status.ActiveState != "active"
+      template:
+        src: config.yaml.j2
+        dest: /etc/rancher/rke2/config.yaml
+        mode: '0600'
+
+    - name: Install RKE2 on the Node
+      when: service_status.status.ActiveState != "active"
+      ansible.builtin.shell:
+        cmd: /tmp/rke2-install.sh
+      environment:
+        INSTALL_RKE2_VERSION: "{{ local_rke2_version }}"
+
+    - name: Start RKE2 service on the Node
+      when: service_status.status.ActiveState != "active"
+      ansible.builtin.systemd:
+        name: "rke2-server.service"
+        state: started
+        enabled: true
+
+    - name: Wait for the Node be ready
+      when: service_status.status.ActiveState != "active"
+      shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide | grep {{ ipaddr }} | grep "Ready"
+      args:
+        executable: /bin/bash
+      changed_when: false
+      register: first_node
+      until:
+        - '" Ready "  in first_node.stdout'
+      retries: 20
+      delay: 15
+
+- name: Join Worker Nodes to RKE2 Cluster
+  when:
+    - inventory_hostname in groups.k8sw
+  block:
+
+    - name: Check RKE2 Service Status
+      ansible.builtin.systemd:
+        name: "rke2-agent"
+      register: service_status 
+
+    - name: Get RKE2 cluster installer script
+      when: service_status.status.ActiveState != "active"
+      get_url:
+        url: '{{ local_rke2installation_script_url }}'
+        dest: /tmp/rke2-install.sh
+        mode: '0700'
+
+    - name: Create RKE2 config directory
+      when: service_status.status.ActiveState != "active"
+      file:
+        path: /etc/rancher/rke2
+        state: directory
+        mode: '0755'
+
+    - name: Create RKE2 config file
+      when: service_status.status.ActiveState != "active"
+      template:
+        src: config.yaml.j2
+        dest: /etc/rancher/rke2/config.yaml
+        mode: '0600'
+
+    - name: Install RKE2 on the Node
+      when: service_status.status.ActiveState != "active"
+      ansible.builtin.shell:
+        cmd: /tmp/rke2-install.sh
+      environment:
+        INSTALL_RKE2_VERSION: "{{ local_rke2_version }}"
+        INSTALL_RKE2_TYPE: "agent"
+
+    - name: Start RKE2 service on the Node
+      when: service_status.status.ActiveState != "active"
+      ansible.builtin.systemd:
+        name: "rke2-agent.service"
+        state: started
+        enabled: true
+
+# Rancher Tasks
+- name: Create Rancher RKE2 Cluster If not Exist
+  delegate_to: localhost
+  when:
+  - local_importrke2_to_rancher
+  - inventory_hostname == groups.k8sm.0
+  block:
+
+    - name: Check if cluster exists
+      ansible.builtin.uri:
+        url: '{{ local_rancher_uri }}'
+        url_username: '{{ local_rancher_username }}'
+        url_password: '{{ local_rancher_password }}'
+        force_basic_auth: true
+        validate_certs: false
+        headers: '{{ local_rancher_headers }}'
+      vars:
+        local_rancher_uri: '{{ local_rancher_host }}/v3/clusters?name={{ local_rancher_cluster_name|lower }}'
+      register: reg_rancher_cluster_status
+      throttle: 1
+
+    - name: Create cluster
+      ansible.builtin.uri:
+        url: '{{ local_rancher_uri }}'
+        url_username: '{{ local_rancher_username }}'
+        url_password: '{{ local_rancher_password }}'
+        force_basic_auth: true
+        validate_certs: false
+        headers: '{{ local_rancher_headers }}'
+        body_format: json
+        method: POST
+        body: '{{ local_rancher_body }}'
+        status_code: 201
+      when: reg_rancher_cluster_status.json.data | length == 0
+      vars:
+        local_rancher_uri: '{{ local_rancher_host }}/v1/provisioning.cattle.io.clusters'
+        local_rancher_body: '{{ rancherimportcluster_create_yaml | to_json }}'
+      register: reg_rancher_cluster_creation
+
+    - name: Show cluster info
+      ansible.builtin.debug:
+        var: reg_rancher_cluster_creation
+      when: ansible_verbosity > 0
+
+    - name: Check new cluster status
+      ansible.builtin.uri:
+        url: '{{ local_rancher_uri }}'
+        url_username: '{{ local_rancher_username }}'
+        url_password: '{{ local_rancher_password }}'
+        force_basic_auth: true
+        validate_certs: false
+        headers: '{{ local_rancher_headers }}'
+      vars:
+        local_rancher_uri: '{{ local_rancher_host }}/v3/clusters?name={{ local_rancher_cluster_name|lower }}'
+      register: reg_rancher_cluster_status
+      throttle: 1
+
+    - name: set cluster id
+      ansible.builtin.set_fact:
+        local_rancherimportcluster_id: '{{ reg_rancher_cluster_status.json.data[0].id }}'
+      when: reg_rancher_cluster_status.json.data | length > 0
+
+    - name: Get cluster registration command
+      ansible.builtin.uri:
+        url: '{{ local_rancher_uri }}'
+        url_username: '{{ local_rancher_username }}'
+        url_password: '{{ local_rancher_password }}'
+        force_basic_auth: true
+        validate_certs: false
+        headers: '{{ local_rancher_headers }}'
+      vars:
+        local_rancher_uri: '{{ local_rancher_host }}/v3/clusters/{{ local_rancherimportcluster_id }}/clusterregistrationtokens'
+      register: reg_rancher_cluster_registration
+      retries: 10
+      delay: 10
+      until: reg_rancher_cluster_registration.json.data | length > 0
+      when: 
+        - reg_rancher_cluster_status.json.data | length > 0
+
+    - name: Show cluster registration command
+      ansible.builtin.debug:
+        var: reg_rancher_cluster_registration.json.data[0].command
+      when: ansible_verbosity > 0
+
+- name: Import RKE2 Cluster to Rancher
+  when:
+  - local_importrke2_to_rancher
+  - inventory_hostname == groups.k8sm.0
+  - reg_rancher_cluster_registration.json.data[0].command | length > 0
+  block:
+
+    - name: Execute Import YAML
+      shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/{{ reg_rancher_cluster_registration.json.data[0].command }} --kubeconfig /etc/rancher/rke2/rke2.yaml
+      args:
+        executable: /bin/bash
+      register: join_stat
+
+    - name: Show Join Log
+      ansible.builtin.debug:
+        var: join_stat
+      when: ansible_verbosity > 0

@@ -1,0 +1,7 @@
+{% if inventory_hostname not in groups.k8sm.0 %}
+server: https://{{ local_rke2_api_ip }}:9345
+{% endif %}
+token: {{ local_rke2_token }}
+tls-san:
+  - cluster.local
+cni: {{ local_rke2_cni }}
