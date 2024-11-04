@@ -1,6 +1,6 @@
 # RKE2 Cluster Create and Rancher Import Role With AWS SSM
 
-This Ansible role is designed to create RKE2 (Rancher Kubernetes Engine 2) cluster on existing Linux Instances and import into Rancher, with `AWS Systems Manager (SSM) integration`.
+This Ansible role is designed to create RKE2 (Rancher Kubernetes Engine 2) cluster on existing `AWS EC2 Linux Instances` and import into `Rancher`, with `AWS Systems Manager (SSM) integration`.
 
 ## Overview
 
