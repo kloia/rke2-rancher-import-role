@@ -1,0 +1,25 @@
+---
+- name : Launching role '{{ role_name }}'
+  include_tasks: '{{ role_name }}.yml'
+  when:
+    - inventory_hostname in groups['linux']
+
+- name: Create ansible_checks directory
+  ansible.builtin.file:
+    path: '{{ ANSIBLE_CUSTOM_CHECKS_DIR }}'
+    state: directory
+    owner: root
+    group: root
+    mode: 0755
+  when:
+    - inventory_hostname in groups['linux']
+
+- name: Mark as correctly installed
+  ansible.builtin.file:
+    path: '{{ ANSIBLE_CUSTOM_CHECKS_DIR }}/{{ role_name }}'
+    owner: root
+    group: root
+    mode: 0644
+    state: touch
+  when:
+    - inventory_hostname in groups['linux']

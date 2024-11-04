@@ -1,0 +1,5 @@
+- hosts: k8s
+  gather_facts: false
+  roles:
+    - name: rke2_create_cluster
+      become: true

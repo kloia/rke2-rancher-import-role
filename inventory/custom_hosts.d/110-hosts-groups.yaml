@@ -1,0 +1,11 @@
+---
+all:
+  children:
+    linux:
+      children:
+        k8sm:
+        k8sw:
+    k8s:
+      children:
+        k8sm:
+        k8sw:
